@@ -9,6 +9,7 @@ from routers import (
     inserate_batch,
     convert_url,
     inserate_by_url,
+    user_listings,
 )
 
 from utils.browser import OptimizedPlaywrightManager
@@ -87,6 +88,7 @@ async def root():
             "/inserate",
             "/inserat/{id}",
             "/inserate-detailed",
+            "/user/{user_id}/inserate",
         ],
 
         "status": "operational",
@@ -109,3 +111,4 @@ app.include_router(inserate_detailed.router)
 app.include_router(inserate_batch.router)
 app.include_router(convert_url.router)
 app.include_router(inserate_by_url.router)
+app.include_router(user_listings.router)

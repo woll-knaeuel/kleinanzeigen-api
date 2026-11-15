@@ -477,6 +477,18 @@ curl -X POST http://localhost:8000/convert-url \
 }
 ```
 
+#### 6. Fetch all listings from a user inventory
+
+**Endpoint:** `GET /user/{user_id}/inserate`
+
+Fetches every public listing from a Kleinanzeigen user's inventory, following the site's pagination until there is no next page. Pages are fetched sequentially to reduce rate-limit risk.
+
+```sh
+curl "http://localhost:8000/user/119284386/inserate" | python -m json.tool
+```
+
+The response contains `user_id`, `results`, `unique_results`, and `pages_fetched`. Each listing uses the same fields as `/inserate-by-url`.
+
 ### Documentation
 
 #### API Response Format
