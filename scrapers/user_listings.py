@@ -1,5 +1,7 @@
 """Scrape every public listing on a Kleinanzeigen user's inventory page."""
 
+from __future__ import annotations
+
 import asyncio
 from typing import Any, Dict, List, TYPE_CHECKING
 from urllib.parse import urlencode, urljoin
