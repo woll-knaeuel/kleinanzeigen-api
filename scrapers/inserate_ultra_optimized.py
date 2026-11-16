@@ -33,6 +33,7 @@ from utils.error_handling import (
     WarningManager,
     error_handling_context,
 )
+from utils.pagination import inject_page as _inject_page
 from utils.performance import PageMetrics, PerformanceTracker
 
 
@@ -608,8 +609,6 @@ class UltraOptimizedScraper:
                     min_str = str(min_price) if min_price is not None else ""
                     max_str = str(max_price) if max_price is not None else ""
                     path_segments.append(f"preis:{min_str}:{max_str}")
-                if category_slug:
-                    path_segments.append("seite:{page}")
                 path_segments.append(f"k0c{category_id}")
                 search_url = base_url + "/" + "/".join(path_segments)
             else:
@@ -632,7 +631,10 @@ class UltraOptimizedScraper:
             async def create_page_task(page_num: int):
                 nonlocal pages_dispatched
                 pages_dispatched += 1
-                url = search_url.format(page=page_num)
+                if category_id is not None and category_slug:
+                    url = _inject_page(search_url, page_num)
+                else:
+                    url = search_url.format(page=page_num)
                 return await self.ultra_optimized_fetch_page(
                     url,
                     page_num,

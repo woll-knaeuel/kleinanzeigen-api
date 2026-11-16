@@ -92,3 +92,38 @@ async def test_inserate_route_passes_none_when_page_count_is_omitted(monkeypatch
     )
 
     assert result["success"] is True
+
+
+async def test_category_query_survives_pagination(monkeypatch):
+    scraper = UltraOptimizedScraper(_FakeBrowserManager())
+    requested_urls = []
+
+    async def fake_fetch(url, page_num, extra_selectors=None):
+        requested_urls.append(url)
+        return (
+            [{"adid": str(page_num), "title": "liebherr"}],
+            PageMetrics(
+                page_number=page_num,
+                url=url,
+                start_time=0.0,
+                end_time=0.1,
+                success=True,
+                retry_count=0,
+                results_count=1,
+            ),
+            {"breadcrump_summary": "1 - 25 von 26"} if page_num == 1 else {},
+        )
+
+    monkeypatch.setattr(scraper, "ultra_optimized_fetch_page", fake_fetch)
+    result = await scraper.ultra_optimized_scrape(
+        query="liebherr",
+        category_id=161,
+        category_slug="s-multimedia-elektronik",
+        page_count=2,
+    )
+
+    assert requested_urls == [
+        "https://www.kleinanzeigen.de/s-multimedia-elektronik/liebherr/k0c161",
+        "https://www.kleinanzeigen.de/s-multimedia-elektronik/seite:2/liebherr/k0c161",
+    ]
+    assert result["pages_fetched"] == 2
