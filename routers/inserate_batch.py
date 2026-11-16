@@ -1,8 +1,9 @@
 import asyncio
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StringConstraints
 
 from schemas import BatchResponse, ErrorResponse
 from scrapers.inserat import get_inserate_details_optimized
@@ -11,8 +12,12 @@ router = APIRouter()
 
 
 class InserateBatchRequest(BaseModel):
-    ids: list[str]
-    max_concurrent: int = 1
+    ids: list[
+        Annotated[
+            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=32)
+        ]
+    ] = Field(min_length=1, max_length=100)
+    max_concurrent: int = Field(default=1, ge=1, le=10)
 
 
 @router.post(

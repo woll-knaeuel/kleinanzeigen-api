@@ -6,7 +6,6 @@ the best possible performance for multi-page scraping operations.
 """
 
 import asyncio
-import gc
 import json
 import random
 import re
@@ -20,7 +19,6 @@ from fastapi import HTTPException
 from utils.asyncio_optimizations import (
     EventLoopOptimizer,
     HighPerformanceTaskManager,
-    MemoryOptimizedProcessor,
     monitor_slow_coroutines,
 )
 from utils.breadcrumb import TOTAL_RESULTS_SELECTOR, parse_breadcrumb
@@ -35,6 +33,7 @@ from utils.error_handling import (
 )
 from utils.pagination import inject_page as _inject_page
 from utils.performance import PageMetrics, PerformanceTracker
+from utils.url_validation import restrict_kleinanzeigen_route
 
 
 def _page_has_old_listings(results: list, min_publish_date: datetime) -> bool:
@@ -181,14 +180,7 @@ def _split_location_distance(text: str) -> tuple[str, float | None]:
 
 class UltraOptimizedScraper:
     """
-    Ultra-optimized scraper implementing all advanced asyncio patterns.
-
-    Features:
-    - uvloop integration for 2-4x performance boost
-    - Memory-conscious processing with automatic GC
-    - Advanced task management with weak references
-    - Connection pooling and reuse
-    - Intelligent concurrency control
+    Scraper with batched DOM extraction, bounded parallelism, and pooled contexts.
     """
 
     def __init__(self, browser_manager: OptimizedPlaywrightManager):
@@ -196,58 +188,140 @@ class UltraOptimizedScraper:
         self.task_manager = HighPerformanceTaskManager(
             max_concurrent=browser_manager._semaphore._value
         )
-        self.memory_processor = MemoryOptimizedProcessor(
-            max_concurrent=browser_manager._semaphore._value,
-            gc_threshold=50,  # More frequent GC for memory efficiency
-        )
-
-        # Setup uvloop if available
-        EventLoopOptimizer.setup_uvloop()
 
     @monitor_slow_coroutines(threshold=0.5)
     async def extract_ads_optimized(self, page) -> list[dict[str, Any]]:
-        """
-        Optimized ad extraction with memory management.
+        """Extract all result cards in one browser round-trip.
 
-        Uses efficient DOM querying and immediate result processing
-        to minimize memory usage.
+        Reading each field through separate Playwright calls multiplies protocol
+        overhead by the number of cards. This script returns compact raw records
+        in one evaluation and excludes the site's separate-location suggestion
+        block from the result set.
         """
         try:
-            # Use more specific selector to reduce DOM traversal
-            # NOTE: Astro relaunch dropped the .ad-listitem wrapper — match
-            # listing articles directly (top ads included, flagged via is_top_ad).
-            items = await page.query_selector_all("article[data-adid]")
+            raw_ads = await page.evaluate(
+                r"""() => {
+                    const text = (node) => node?.innerText?.trim() || "";
+                    const dateRe = /^((Heute|Gestern),\s*\d{1,2}:\d{2}|\d{2}\.\d{2}\.\d{4})$/;
+                    const locationSelectors = [
+                        ".aditem-main--top--left",
+                        ".aditem-main--top--left--location",
+                        "[class*='aditem-main--top--left']",
+                        "[class*='location']",
+                        "[class*='Location']"
+                    ];
+
+                    return Array.from(document.querySelectorAll("article[data-adid]"))
+                        .filter((article) => !article.closest(".alternative-search-ads-zsrp"))
+                        .map((article) => {
+                            const titleNode = article.querySelector(
+                                "h2.text-module-begin a.ellipsis, h3 a, h2 a, h2, h3"
+                            );
+                            const priceNode = article.querySelector(
+                                "p.aditem-main--middle--price-shipping--price, [class*='price'], h3 ~ div > p.font-strong"
+                            );
+                            const descriptionNode = article.querySelector(
+                                "p.aditem-main--middle--description, h3 + p"
+                            );
+                            const legacyDate = article.querySelector(".aditem-main--top--right");
+                            let date = text(legacyDate);
+                            if (!date) {
+                                for (const span of article.querySelectorAll("span")) {
+                                    const candidate = (span.textContent || "").trim();
+                                    if (dateRe.test(candidate)) {
+                                        date = candidate;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            let location = "";
+                            for (const selector of locationSelectors) {
+                                const node = article.querySelector(selector);
+                                location = text(node);
+                                if (location) break;
+                            }
+                            if (!location) {
+                                const lines = (article.innerText || "")
+                                    .split("\n").map((line) => line.trim()).filter(Boolean);
+                                const zipIndex = lines.findIndex((line) => /\b\d{5}\b/.test(line));
+                                if (zipIndex !== -1) {
+                                    location = lines[zipIndex];
+                                    if (zipIndex + 1 < lines.length &&
+                                        /^\(\d+(?:[.,]\d+)?\s*km\)$/.test(lines[zipIndex + 1])) {
+                                        location += " " + lines[zipIndex + 1];
+                                    }
+                                }
+                            }
+
+                            let jsonldTitle = "";
+                            const jsonld = article.querySelector('script[type="application/ld+json"]');
+                            if (jsonld) {
+                                try {
+                                    const data = JSON.parse(jsonld.textContent || "{}");
+                                    jsonldTitle = data.title || data.name || "";
+                                } catch (_) {}
+                            }
+
+                            return {
+                                adid: article.getAttribute("data-adid"),
+                                href: article.getAttribute("data-href"),
+                                title: text(titleNode),
+                                jsonldTitle,
+                                price: text(priceNode),
+                                description: text(descriptionNode),
+                                date,
+                                location
+                            };
+                        })
+                        .filter((ad) => ad.adid && ad.href);
+                }"""
+            )
             previews = await self._get_ad_previews(page)
-
-            results = []
-
-            # Process items in batches to control memory usage
-            batch_size = 10
-            for i in range(0, len(items), batch_size):
-                batch = items[i : i + batch_size]
-
-                # Process batch concurrently
-                batch_tasks = []
-                for item in batch:
-                    batch_tasks.append(self._extract_single_ad(item, previews))
-
-                batch_results = await asyncio.gather(
-                    *batch_tasks, return_exceptions=True
-                )
-
-                # Filter successful results
-                for result in batch_results:
-                    if isinstance(result, dict):
-                        results.append(result)
-
-                # Periodic memory cleanup
-                if i % (batch_size * 5) == 0:
-                    gc.collect()
-
-            return results
+            return [
+                result
+                for raw_ad in (raw_ads or [])
+                if (result := self._normalize_extracted_ad(raw_ad, previews))
+                is not None
+            ]
 
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    def _normalize_extracted_ad(
+        self, raw: dict[str, Any], previews: dict[str, dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """Convert the batched browser payload into the public card shape."""
+        adid = raw.get("adid")
+        href = raw.get("href")
+        if not adid or not href:
+            return None
+
+        title = raw.get("title") or raw.get("jsonldTitle") or ""
+        price = raw.get("price") or ""
+        price = price.replace("€", "").replace("VB", "").replace(".", "").strip()
+        published_at = _parse_kleinanzeigen_date(raw.get("date") or "")
+        preview = previews.get(str(adid), {})
+        if published_at is None:
+            sorting_date = preview.get("sortingDate")
+            published_at = _parse_kleinanzeigen_date(
+                sorting_date if isinstance(sorting_date, str) else ""
+            )
+        location, distance_km = _split_location_distance(
+            _clean_location_text(raw.get("location") or "")
+        )
+
+        return {
+            "adid": str(adid),
+            "url": f"https://www.kleinanzeigen.de{href}",
+            "title": title if isinstance(title, str) else "",
+            "price": price,
+            "location": location,
+            "distance_km": distance_km,
+            "description": raw.get("description") or "",
+            "published_at": published_at,
+            "is_top_ad": preview.get("topAd") is True,
+        }
 
     async def _get_ad_previews(self, page) -> dict[str, dict[str, Any]]:
         """Read the per-ad preview data embedded in the page's Astro islands."""
@@ -451,6 +525,7 @@ class UltraOptimizedScraper:
         page_num: int,
         retry_count: int = 2,
         extra_selectors: dict[str, str] = None,
+        restrict_to_kleinanzeigen: bool = False,
     ) -> tuple[list[dict], PageMetrics, dict[str, str]]:
         """
         Ultra-optimized page fetching with all performance enhancements.
@@ -478,6 +553,8 @@ class UltraOptimizedScraper:
                     # Get context from pool (optimized)
                     context = await self.browser_manager.get_context()
                     page = await context.new_page()
+                    if restrict_to_kleinanzeigen:
+                        await page.route("**/*", restrict_kleinanzeigen_route)
 
                     # Optimized page loading with minimal wait
                     await page.goto(url, timeout=60000, wait_until="domcontentloaded")
@@ -540,11 +617,22 @@ class UltraOptimizedScraper:
                     break
 
                 finally:
-                    # Cleanup resources immediately
+                    # Cleanup independently: a page.close failure must not skip
+                    # releasing the context and strand a pool slot.
                     if page:
-                        await page.close()
+                        try:
+                            await page.close()
+                        except Exception as cleanup_error:
+                            logger.logger.warning(
+                                f"Could not close page {page_num}: {cleanup_error}"
+                            )
                     if context:
-                        await self.browser_manager.release_context(context)
+                        try:
+                            await self.browser_manager.release_context(context)
+                        except Exception as cleanup_error:
+                            logger.logger.warning(
+                                f"Could not release context for page {page_num}: {cleanup_error}"
+                            )
 
             # Create failed metrics
             error_msg = str(last_error) if last_error else "Unknown error"
@@ -577,10 +665,7 @@ class UltraOptimizedScraper:
         """
         Ultra-optimized multi-page scraping with all performance enhancements.
 
-        Expected performance improvements:
-        - 30-50% faster than standard optimized version
-        - Better memory efficiency
-        - More reliable under high load
+        Uses batched DOM extraction and bounded parallel page retrieval.
         """
         logger = ErrorLogger("ultra_scraper")
         warning_manager = WarningManager()
@@ -635,13 +720,15 @@ class UltraOptimizedScraper:
                     url = _inject_page(search_url, page_num)
                 else:
                     url = search_url.format(page=page_num)
-                return await self.ultra_optimized_fetch_page(
+                fetch = self.ultra_optimized_fetch_page(
                     url,
                     page_num,
                     extra_selectors=(
                         TOTAL_RESULTS_SELECTOR if page_num == page else None
                     ),
                 )
+                execute = getattr(self.browser_manager, "execute_with_semaphore", None)
+                return await execute(fetch) if execute else await fetch
 
             requested_pages = 50 if page_count is None else page_count
             page_numbers = list(range(page, page + requested_pages))
@@ -714,7 +801,9 @@ class UltraOptimizedScraper:
             ]
 
             # Process the rest in batches to balance speed and memory.
-            batch_size = min(8, len(remaining)) or 1
+            batch_size = (
+                1 if min_publish_date is not None else min(8, len(remaining)) or 1
+            )
             for i in range(0, len(remaining), batch_size):
                 if stop_early:
                     break
@@ -726,11 +815,9 @@ class UltraOptimizedScraper:
                 )
 
                 for result in batch_results:
-                    if _process_page_result(result):
-                        stop_early = True
-
-                # Memory cleanup between batches
-                gc.collect()
+                    if stop_early:
+                        break
+                    stop_early = _process_page_result(result)
 
             # Set performance metrics
             tracker.set_concurrent_level(batch_size)
@@ -792,18 +879,15 @@ class UltraOptimizedScraper:
                     **request_metrics.to_dict(),
                     "success_rate": round(success_rate, 2),
                     "optimization_level": "ultra",
-                    "memory_optimized": True,
-                    "uvloop_enabled": hasattr(asyncio.get_event_loop(), "_selector"),
+                    "uvloop_enabled": EventLoopOptimizer.is_uvloop_running(),
                 },
                 "task_metrics": task_metrics,
                 "browser_metrics": browser_metrics,
                 "optimization_features": [
-                    "uvloop_integration",
-                    "memory_conscious_processing",
-                    "advanced_task_management",
-                    "intelligent_batching",
+                    "batched_dom_extraction",
+                    "parallel_page_fetch",
+                    "global_concurrency_limit",
                     "context_pooling",
-                    "automatic_gc",
                 ],
             }
 
@@ -822,8 +906,6 @@ class UltraOptimizedScraper:
     async def cleanup(self):
         """Clean up all resources."""
         await self.task_manager.cancel_all()
-        await self.memory_processor.cleanup()
-        gc.collect()
 
 
 # Factory function for easy integration
@@ -852,11 +934,7 @@ async def ultra_optimized_scrape_inserate(
     Direct function for ultra-optimized scraping.
 
     This function applies all advanced asyncio optimizations for maximum performance.
-    Expected improvements over standard version:
-    - 30-50% faster execution
-    - Better memory efficiency
-    - More reliable error handling
-    - Enhanced monitoring and metrics
+    Uses pooled browser contexts, bounded concurrency, and batched DOM extraction.
     """
     scraper = await create_ultra_optimized_scraper(browser_manager)
 

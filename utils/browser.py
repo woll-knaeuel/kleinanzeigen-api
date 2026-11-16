@@ -94,7 +94,9 @@ class OptimizedPlaywrightManager:
         self._context_in_use: list[BrowserContext] = []
         self._max_contexts = max_contexts
         self._semaphore = asyncio.Semaphore(max_concurrent)
-        self._context_lock = asyncio.Lock()
+        if max_contexts < 1 or max_concurrent < 1:
+            raise ValueError("max_contexts and max_concurrent must be positive")
+        self._context_condition = asyncio.Condition()
 
         # Performance metrics
         self._contexts_created = 0
@@ -119,42 +121,52 @@ class OptimizedPlaywrightManager:
                 self._contexts_created += 1
 
     async def get_context(self) -> BrowserContext:
-        """Get a browser context from the pool or create a new one"""
-        async with self._context_lock:
+        """Get a pooled context or wait without holding the pool lock."""
+        async with self._context_condition:
+            while (
+                not self._context_pool
+                and len(self._context_in_use) >= self._max_contexts
+            ):
+                await self._context_condition.wait()
+
             if self._context_pool:
                 context = self._context_pool.pop()
                 self._context_in_use.append(context)
                 self._contexts_reused += 1
                 return context
 
-            # Create new context if pool is empty and under limit
-            if len(self._context_in_use) < self._max_contexts:
-                context = await _new_context(self._browser, get_random_ua())
-                self._context_in_use.append(context)
-                self._contexts_created += 1
-                return context
-
-            # If we're at the limit, wait and try again
-            await asyncio.sleep(0.1)
-            return await self.get_context()
+            context = await _new_context(self._browser, get_random_ua())
+            self._context_in_use.append(context)
+            self._contexts_created += 1
+            return context
 
     async def release_context(self, context: BrowserContext):
-        """Return a context to the pool for reuse"""
-        async with self._context_lock:
-            if context in self._context_in_use:
-                self._context_in_use.remove(context)
+        """Clean a context and return it to the pool, waking waiting callers."""
+        async with self._context_condition:
+            if context not in self._context_in_use:
+                return
 
-                # Close all pages and clear session state so reused contexts
-                # don't carry Kleinanzeigen tracking cookies into the next request
+            self._context_in_use.remove(context)
+            try:
                 for page in context.pages:
                     await page.close()
                 await context.clear_cookies()
 
-                # Add back to pool if under limit, otherwise close it
                 if len(self._context_pool) < self._max_contexts // 2:
                     self._context_pool.append(context)
                 else:
                     await context.close()
+
+            except Exception:
+                # A context that cannot be cleaned is unsafe to reuse; close it
+                # instead, but always wake callers waiting for a pool slot.
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+                raise
+            finally:
+                self._context_condition.notify_all()
 
     async def execute_with_semaphore(self, coro):
         """Execute a coroutine with concurrency control"""

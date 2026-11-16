@@ -4,7 +4,6 @@ Reuses UltraOptimizedScraper for fetching/extraction; only the URL-building diff
 """
 
 import asyncio
-import gc
 import logging
 import re
 from datetime import datetime
@@ -19,6 +18,7 @@ from scrapers.inserate_ultra_optimized import (
 from utils.breadcrumb import TOTAL_RESULTS_SELECTOR, parse_breadcrumb
 from utils.browser import OptimizedPlaywrightManager
 from utils.performance import PerformanceTracker
+from utils.url_validation import validate_kleinanzeigen_url
 
 
 def inject_page(url: str, page_num: int) -> str:
@@ -70,12 +70,14 @@ async def scrape_by_url(
     If min_publish_date is set, stops fetching once a page contains listings
     older than that date and trims those listings from the final results.
     """
+    if type(max_pages) is not int or not 1 <= max_pages <= 50:
+        raise ValueError("max_pages must be between 1 and 50")
+    base_url = validate_kleinanzeigen_url(base_url)
     scraper = await create_ultra_optimized_scraper(browser_manager)
     tracker = PerformanceTracker()
     tracker.start_request()
 
     try:
-        batch_size = min(8, max_pages)
         all_results = []
         all_metrics = []
         total_results: int | None = None
@@ -97,11 +99,14 @@ async def scrape_by_url(
 
             if page_num > 1:
                 await asyncio.sleep(2)
-            result = await scraper.ultra_optimized_fetch_page(
+            fetch = scraper.ultra_optimized_fetch_page(
                 inject_page(base_url, page_num),
                 page_num,
                 extra_selectors=TOTAL_RESULTS_SELECTOR if page_num == 1 else None,
+                restrict_to_kleinanzeigen=True,
             )
+            execute = getattr(browser_manager, "execute_with_semaphore", None)
+            result = await execute(fetch) if execute else await fetch
             if not isinstance(result, Exception):
                 page_results, page_metrics, extras = result
 
@@ -142,10 +147,9 @@ async def scrape_by_url(
 
                 if stop:
                     break
-            gc.collect()
 
         pages_attempted = len(all_metrics)
-        tracker.set_concurrent_level(batch_size)
+        tracker.set_concurrent_level(1)
         browser_metrics = browser_manager.get_performance_metrics()
         tracker.set_browser_contexts_used(
             browser_metrics["contexts_in_use"] + browser_metrics["contexts_in_pool"]

@@ -1,17 +1,18 @@
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from schemas import ErrorResponse, SearchResponse
 from utils.content_filter import content_filter_from_params
+from utils.url_validation import validate_kleinanzeigen_url
 
 router = APIRouter()
 
 
 class InserateByUrlRequest(BaseModel):
-    url: str
-    max_pages: int = 1
+    url: str = Field(min_length=1, max_length=2048)
+    max_pages: int = Field(default=1, ge=1, le=50)
     min_publish_date: datetime | None = None
     include_terms: str | None = None
     exclude_terms: str | None = None
@@ -19,6 +20,11 @@ class InserateByUrlRequest(BaseModel):
     match_all_include: bool = False
     case_sensitive: bool = False
     filter_fields: str = "title,description"
+
+    @field_validator("url")
+    @classmethod
+    def require_kleinanzeigen_domain(cls, value: str) -> str:
+        return validate_kleinanzeigen_url(value)
 
 
 @router.post(

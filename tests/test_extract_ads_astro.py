@@ -248,3 +248,18 @@ def test_distance_is_standalone_field():
     assert ads["2"]["distance_km"] == 12.5
     assert ads["3"]["location"] == "14979 Großbeeren"
     assert ads["3"]["distance_km"] is None
+
+
+def test_alternative_location_section_is_not_returned():
+    html = (
+        "<!doctype html><html><body><main id='srchrslt-results'>"
+        "<ul>" + _card("local-1", "38106 Braunschweig") + "</ul>"
+        "<div class='alternative-search-ads-zsrp'>"
+        "<h2>Weitere Ergebnisse in anderen Orten</h2><ul>"
+        + _card("other-1", "38100 Braunschweig (2 km)")
+        + "</ul></div></main></body></html>"
+    )
+
+    ads = asyncio.run(_extract(html))
+
+    assert [ad["adid"] for ad in ads] == ["local-1"]

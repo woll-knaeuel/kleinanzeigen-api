@@ -160,29 +160,36 @@ class EventLoopOptimizer:
     """
 
     @staticmethod
-    def setup_uvloop():
-        """Install uvloop for 2-4x performance improvement."""
+    def setup_uvloop() -> bool:
+        """Install uvloop before loop startup, or report the active loop type."""
+        try:
+            import uvloop
+        except ImportError:
+            return False
+
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            uvloop.install()
+            return True
+        return isinstance(running_loop, uvloop.Loop)
+
+    @staticmethod
+    def is_uvloop_running() -> bool:
+        """Return whether the current running loop is actually uvloop."""
         try:
             import uvloop
 
-            uvloop.install()
-            return True
-        except ImportError:
-            print("uvloop not available, using default event loop")
+            running_loop = asyncio.get_running_loop()
+        except ImportError, RuntimeError:
             return False
+        return isinstance(running_loop, uvloop.Loop)
 
     @staticmethod
     def optimize_event_loop():
-        """Apply event loop optimizations."""
-        loop = asyncio.get_event_loop()
-
-        # Set slow callback duration for debugging
+        """Set callback diagnostics without forcing slow debug mode in production."""
+        loop = asyncio.get_running_loop()
         loop.slow_callback_duration = 0.1
-
-        # Enable debug mode in development
-        if __debug__:
-            loop.set_debug(True)
-
         return loop
 
 
@@ -268,10 +275,7 @@ async def optimized_asyncio_context(max_concurrent: int = 10):
         async with optimized_asyncio_context(max_concurrent=20) as optimizer:
             results = await optimizer.process_batch(items, process_func)
     """
-    # Setup uvloop for performance
-    EventLoopOptimizer.setup_uvloop()
-
-    # Create optimized processor
+    # The event loop is already running here; uvloop can only be installed before startup.
     processor = MemoryOptimizedProcessor(max_concurrent)
 
     try:

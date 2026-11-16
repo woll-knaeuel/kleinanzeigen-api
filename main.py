@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle - startup and shutdown events"""
     global browser_manager
 
-    # Setup uvloop for maximum performance (2-4x improvement)
+    # Detect whether the server was started with an actual uvloop.
     uvloop_enabled = EventLoopOptimizer.setup_uvloop()
 
     # Optimize event loop settings
