@@ -760,7 +760,7 @@ class UltraOptimizedScraper:
 
             if request_metrics.total_time > 8.0:
                 warning_manager.add_warning(
-                    f"Performance below target: {request_metrics.total_time:.1f}s for {page_count} pages",
+                    f"Performance below target: {request_metrics.total_time:.1f}s for {pages_dispatched} pages",
                     ErrorSeverity.LOW,
                     ctx.context,
                     impact_description="Consider reducing page count or checking network conditions",
@@ -768,8 +768,8 @@ class UltraOptimizedScraper:
 
             # Log comprehensive summary
             logger.log_operation_summary(
-                operation=f"ultra_scrape_{page_count}_pages",
-                total_items=page_count,
+                operation=f"ultra_scrape_{pages_dispatched}_pages",
+                total_items=pages_dispatched,
                 successful_items=successful_pages,
                 warnings=warning_manager.get_warnings(),
                 errors=[],

@@ -114,7 +114,7 @@ The API will be available at `http://localhost:8000`
 - **`min_price`** *(integer, optional)*: The minimum price in Euros for the listings (e.g., `200` for at least 200 Euros).
 - **`max_price`** *(integer, optional)*: The maximum price in Euros for the listings (e.g., `500` for at most 500 Euros).
 - **`page`** *(integer, optional)*: The first page to fetch (default 1). `page=5&page_count=3` fetches pages 5–7. Pages beyond the real result count return empty.
-- **`page_count`** *(integer, optional)*: The number of consecutive pages to fetch starting at `page` (default 1, max: 20 pages). Fetching stops early when pages run out or `min_publish_date` is reached.
+- **`page_count`** *(integer, optional)*: Number of consecutive pages to fetch starting at `page` (max: 50). If omitted, pagination is automatic up to 50 pages; it stops when pages run out or `min_publish_date` is reached.
 - **`min_publish_date`** *(datetime, optional)*: Stop fetching once a page contains listings published before this datetime. Listings older than the threshold are removed from the final results. Format: `YYYY-MM-DDTHH:MM:SS` (e.g., `2026-05-03T08:00:00`). Useful for intraday runs that should only collect new listings.
 
 ##### Example Requests
@@ -412,7 +412,7 @@ curl -s -X POST http://localhost:8000/inserate-by-url \
 - **`unique_results`**: Total number of unique listings returned across all fetched pages (deduplicated by ad ID).
 - **`total_results`**: Total hits reported by Kleinanzeigen for this search (e.g. `120140`). Extracted from the page breadcrumb on the first page load — no extra request needed.
 - **`total_pages`**: Real page count derived from `total_results`; omitted when the first fetched page is not page 1 (page size is then ambiguous).
-- **`page`** / **`pages_fetched`**: The first page requested and how many pages were actually fetched — smaller than `page_count` when fetching stopped early.
+- **`page`** / **`pages_fetched`**: The first page requested and the number of pages actually fetched. When `page_count` is omitted, automatic pagination stops at the last available page or after 50 pages.
 - **`time_taken`**: Total elapsed time in seconds.
 - **`performance_metrics.pages_requested`** / **`pages_successful`** / **`success_rate`**: Page-level fetch statistics.
 
