@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode, urljoin
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ def user_inventory_url(user_id: str, page_num: int = 1) -> str:
 
 async def scrape_user_listings(
     browser_manager: OptimizedPlaywrightManager, user_id: str
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Fetch sequential pages until Kleinanzeigen provides no next-page link."""
     base_url = user_inventory_url(user_id)
     from scrapers.inserate_ultra_optimized import create_ultra_optimized_scraper
@@ -35,7 +35,7 @@ async def scrape_user_listings(
     scraper = await create_ultra_optimized_scraper(browser_manager)
     context = await browser_manager.get_context()
     page = None
-    all_results: List[Dict[str, Any]] = []
+    all_results: list[dict[str, Any]] = []
     seen_ids = set()
     pages_fetched = 0
     current_url = base_url
@@ -64,7 +64,9 @@ async def scrape_user_listings(
             current_url = next_url
             await asyncio.sleep(2)
         else:
-            raise RuntimeError(f"Pagination exceeded safety limit of {_PAGE_LIMIT} pages")
+            raise RuntimeError(
+                f"Pagination exceeded safety limit of {_PAGE_LIMIT} pages"
+            )
 
         return {
             "success": True,

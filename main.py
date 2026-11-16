@@ -1,114 +1,86 @@
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from routers import (
-    inserate_ultra as inserate,
+    convert_url,
     inserat,
-    inserate_detailed_ultra as inserate_detailed,
+    inserate_batch,
+    inserate_by_url,
+    inserate_detailed_ultra,
+    inserate_ultra,
+    user_listings,
+)
+from schemas import RootResponse
+from utils.asyncio_optimizations import EventLoopOptimizer
+from utils.browser import OptimizedPlaywrightManager
+
+# Single source of truth for the public API routers: used both to register
+# routes and to advertise them in the root response.
+_ROUTER_MODULES = (
+    inserate_ultra,
+    inserat,
+    inserate_detailed_ultra,
     inserate_batch,
     convert_url,
     inserate_by_url,
     user_listings,
 )
 
-from utils.browser import OptimizedPlaywrightManager
-from utils.asyncio_optimizations import EventLoopOptimizer
-
-
-# Global browser manager instance.
+# Global browser manager instance for sharing across all endpoints
 browser_manager = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Manage application lifecycle.
-
-    Creates one shared OptimizedPlaywrightManager for all
-    API requests and shuts it down cleanly when the application
-    terminates.
-    """
-
+    """Manage application lifecycle - startup and shutdown events"""
     global browser_manager
 
-    # ---------------------------------------------------------
-    # Event loop optimization
-    # ---------------------------------------------------------
-
+    # Setup uvloop for maximum performance (2-4x improvement)
     uvloop_enabled = EventLoopOptimizer.setup_uvloop()
 
+    # Optimize event loop settings
     EventLoopOptimizer.optimize_event_loop()
 
-    # ---------------------------------------------------------
-    # Browser manager
-    # ---------------------------------------------------------
+    # Startup: Initialize shared browser manager with optimized settings
+    browser_manager = OptimizedPlaywrightManager(max_contexts=20, max_concurrent=10)
+    try:
+        await browser_manager.start()
+    except NotImplementedError as exc:
+        # Windows + `uvicorn --reload`/`--workers` runs a SelectorEventLoop,
+        # which cannot spawn the Playwright driver subprocess (issue #15).
+        if sys.platform == "win32":
+            raise RuntimeError(
+                "Playwright cannot start on this event loop. On Windows, run "
+                "`uvicorn main:app` without --reload/--workers, or use Docker."
+            ) from exc
+        raise
 
-    browser_manager = OptimizedPlaywrightManager(
-        max_contexts=20,
-        max_concurrent=10,
-    )
-
-    await browser_manager.start()
-
-    # Make the manager available to routers through app.state.
+    # Store browser manager in app state for access by routers
     app.state.browser_manager = browser_manager
     app.state.uvloop_enabled = uvloop_enabled
 
-    try:
+    yield
 
-        yield
-
-    finally:
-
-        # -----------------------------------------------------
-        # Clean shutdown
-        # -----------------------------------------------------
-
-        if browser_manager:
-
-            await browser_manager.close()
-
-        browser_manager = None
+    # Shutdown: Clean up browser resources
+    if browser_manager:
+        await browser_manager.close()
 
 
-app = FastAPI(
-    title="Kleinanzeigen API",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+app = FastAPI(version="1.0.0", lifespan=lifespan)
 
 
-@app.get("/")
+@app.get("/", response_model=RootResponse)
 async def root():
     return {
         "message": "Welcome to the Kleinanzeigen API",
-
         "endpoints": [
-            "/inserate",
-            "/inserat/{id}",
-            "/inserate-detailed",
-            "/user/{user_id}/inserate",
+            route.path for module in _ROUTER_MODULES for route in module.router.routes
         ],
-
         "status": "operational",
-
-        "features": {
-            "automatic_pagination": True,
-            "automatic_result_count_detection": True,
-            "deduplication": True,
-        },
     }
 
 
-# -------------------------------------------------------------
-# Routers
-# -------------------------------------------------------------
-
-app.include_router(inserate.router)
-app.include_router(inserat.router)
-app.include_router(inserate_detailed.router)
-app.include_router(inserate_batch.router)
-app.include_router(convert_url.router)
-app.include_router(inserate_by_url.router)
-app.include_router(user_listings.router)
+for _module in _ROUTER_MODULES:
+    app.include_router(_module.router)

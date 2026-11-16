@@ -1,10 +1,33 @@
+from fastapi import APIRouter, HTTPException, Query, Request
+
+from schemas import (
+    ErrorResponse,
+    ListingDetailResponse,
+    ListingNotFoundResponse,
+    ScrapeErrorResponse,
+)
 from scrapers.inserat import get_inserate_details_optimized
-from fastapi import APIRouter, HTTPException, Request, Query
 
 router = APIRouter()
 
 
-@router.get("/inserat/{id}")
+@router.get(
+    "/inserat/{id}",
+    response_model=ListingDetailResponse,
+    response_model_exclude_unset=True,
+    responses={
+        400: {"model": ErrorResponse, "description": "Blank listing ID"},
+        404: {
+            "model": ListingNotFoundResponse,
+            "description": "Ad not found or deleted",
+        },
+        500: {
+            "model": ScrapeErrorResponse,
+            "description": "Failed to fetch listing details",
+        },
+        503: {"model": ErrorResponse, "description": "Browser manager not initialized"},
+    },
+)
 async def get_inserat(
     request: Request,
     id: str,

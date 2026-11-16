@@ -5,17 +5,30 @@ Ultra-optimized combined endpoint for maximum performance.
 import asyncio
 import time
 import uuid
-from typing import Dict, Any, Optional
-from fastapi import APIRouter, Query, HTTPException, Request
+from typing import Any
 
-from scrapers.inserate_ultra_optimized import ultra_optimized_scrape_inserate
+from fastapi import APIRouter, HTTPException, Query, Request
+
+from schemas import DetailedSearchResponse, ErrorResponse
 from scrapers.inserat import get_inserate_details_optimized
+from scrapers.inserate_ultra_optimized import ultra_optimized_scrape_inserate
 from utils.content_filter import content_filter_from_params
 
 router = APIRouter()
 
 
-@router.get("/inserate-detailed")
+@router.get(
+    "/inserate-detailed",
+    response_model=DetailedSearchResponse,
+    response_model_exclude_unset=True,
+    responses={
+        500: {
+            "model": ErrorResponse,
+            "description": "Listing search or detail fetch failed",
+        },
+        503: {"model": ErrorResponse, "description": "Browser manager not initialized"},
+    },
+)
 async def get_inserate_with_details(
     request: Request,
     query: str = Query(None, description="Search query string"),
@@ -23,25 +36,19 @@ async def get_inserate_with_details(
     radius: int = Query(None, description="Search radius in kilometers"),
     min_price: int = Query(None, description="Minimum price filter"),
     max_price: int = Query(None, description="Maximum price filter"),
-    page_count: int = Query(1, ge=1, le=3, description="Number of pages to fetch"),
+    page: int = Query(1, ge=1, description="First page to fetch"),
+    page_count: int = Query(
+        1, ge=1, le=3, description="Number of consecutive pages to fetch"
+    ),
     max_concurrent_details: int = Query(
         5, ge=1, le=10, description="Maximum concurrent detail fetches"
     ),
-    include_terms: Optional[str] = Query(
-        None, description="Kommagetrennte Begriffe/Regex — mind. einer muss vorkommen"
-    ),
-    exclude_terms: Optional[str] = Query(
-        None, description="Kommagetrennte Begriffe/Regex — keiner darf vorkommen"
-    ),
-    use_regex: bool = Query(False, description="Begriffe als Regex interpretieren"),
-    match_all_include: bool = Query(
-        False, description="true = alle include_terms müssen matchen (AND)"
-    ),
+    include_terms: str | None = Query(None),
+    exclude_terms: str | None = Query(None),
+    use_regex: bool = Query(False),
+    match_all_include: bool = Query(False),
     case_sensitive: bool = Query(False),
-    filter_fields: str = Query(
-        "title,description",
-        description="title, description und/oder description_full (nur hier verfügbar)",
-    ),
+    filter_fields: str = Query("title,description"),
 ):
     """
     Fetch listings with detailed information in a single request.
@@ -49,13 +56,6 @@ async def get_inserate_with_details(
     Combines listing search and detail fetching operations. First searches for
     listings based on criteria, then concurrently fetches detailed information
     for each found listing, returning combined results.
-
-    Content filtering is applied in two stages:
-    1. Pre-filter on title/description (preview fields) BEFORE the detail
-       fetch — this skips the expensive per-listing detail request entirely
-       for listings that would be filtered out anyway.
-    2. Post-filter on description_full (if requested) AFTER the detail fetch,
-       since the full description is only available once details are loaded.
     """
     browser_manager = request.app.state.browser_manager
     if not browser_manager:
@@ -81,6 +81,7 @@ async def get_inserate_with_details(
             radius=radius,
             min_price=min_price,
             max_price=max_price,
+            page=page,
             page_count=page_count,
         )
 
@@ -88,29 +89,24 @@ async def get_inserate_with_details(
             raise HTTPException(status_code=500, detail="Failed to fetch listings")
 
         listings = listings_result.get("results", [])
-        content_filter_meta: Dict[str, Any] = {}
-
-        # ------------------------------------------------------------------
-        # Pre-filter (title/description) BEFORE the expensive detail fetch.
-        # Only applicable if the filter does not exclusively rely on
-        # description_full, which isn't available yet at this point.
-        # ------------------------------------------------------------------
+        content_filter_meta = {}
         preview_fields = {"title", "description"} & set(content_filter.fields)
-
         if content_filter.active and preview_fields:
-            pre_filter = content_filter_from_params(
+            preview_filter = content_filter_from_params(
                 include_terms=include_terms,
                 exclude_terms=exclude_terms,
                 use_regex=use_regex,
                 match_all_include=match_all_include,
                 case_sensitive=case_sensitive,
-                filter_fields=",".join(preview_fields),
+                filter_fields=",".join(sorted(preview_fields)),
             )
-            before_pre = len(listings)
-            listings = pre_filter.apply(listings)
-            content_filter_meta["pre_filter_before"] = before_pre
-            content_filter_meta["pre_filter_after"] = len(listings)
-            content_filter_meta["pre_filter_removed"] = before_pre - len(listings)
+            before_filter = len(listings)
+            listings = preview_filter.apply(listings)
+            content_filter_meta.update(
+                pre_filter_before=before_filter,
+                pre_filter_after=len(listings),
+                pre_filter_removed=before_filter - len(listings),
+            )
 
         if not listings:
             response = {
@@ -124,6 +120,9 @@ async def get_inserate_with_details(
                     "success_rate": 100,
                 },
             }
+            for key in ("total_results", "total_pages", "page", "pages_fetched"):
+                if key in listings_result:
+                    response[key] = listings_result[key]
             if content_filter.active:
                 response["content_filter_meta"] = {
                     **content_filter.summary(),
@@ -135,7 +134,7 @@ async def get_inserate_with_details(
         detail_request_id = f"req-{uuid.uuid4().hex[:8]}"
         total_listings = len(listings)
 
-        async def fetch_single_detail(listing: Dict[str, Any], index: int):
+        async def fetch_single_detail(listing: dict[str, Any], index: int):
             """Fetch details for a single listing."""
             try:
                 listing_id = listing.get("adid")
@@ -186,15 +185,14 @@ async def get_inserate_with_details(
                 combined_data.append(result)
                 successful_details += 1
 
-        # ------------------------------------------------------------------
-        # Post-filter (full filter, incl. description_full) AFTER detail fetch
-        # ------------------------------------------------------------------
         if content_filter.active:
-            before_post = len(combined_data)
+            before_post_filter = len(combined_data)
             combined_data = content_filter.apply(combined_data)
-            content_filter_meta["post_filter_before"] = before_post
-            content_filter_meta["post_filter_after"] = len(combined_data)
-            content_filter_meta["post_filter_removed"] = before_post - len(combined_data)
+            content_filter_meta.update(
+                post_filter_before=before_post_filter,
+                post_filter_after=len(combined_data),
+                post_filter_removed=before_post_filter - len(combined_data),
+            )
 
         total_time = time.time() - start_time
 
@@ -217,6 +215,9 @@ async def get_inserate_with_details(
             },
         }
 
+        for key in ("total_results", "total_pages", "page", "pages_fetched"):
+            if key in listings_result:
+                response[key] = listings_result[key]
         if content_filter.active:
             response["content_filter_meta"] = {
                 **content_filter.summary(),

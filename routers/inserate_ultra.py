@@ -3,106 +3,74 @@ Ultra-optimized router for maximum performance scraping.
 """
 
 from datetime import datetime
-from typing import Optional
 
-from fastapi import APIRouter, Query, Request, HTTPException
+from fastapi import APIRouter, HTTPException, Query, Request
+
+from schemas import ErrorResponse, SearchResponse
 from scrapers.inserate_ultra_optimized import ultra_optimized_scrape_inserate
 from utils.content_filter import content_filter_from_params
 
 router = APIRouter()
 
 
-@router.get("/inserate")
+@router.get(
+    "/inserate",
+    response_model=SearchResponse,
+    response_model_exclude_unset=True,
+    responses={
+        500: {"model": ErrorResponse, "description": "Scrape failed"},
+        503: {"model": ErrorResponse, "description": "Browser manager not initialized"},
+    },
+)
 async def get_inserate_ultra_optimized(
     request: Request,
     query: str = Query(None, description="Search query string"),
-    location: str = Query(
-        None, description="Location filter (postal code or place name)"
-    ),
+    location: str = Query(None, description="Location filter"),
     radius: int = Query(None, description="Search radius in kilometers"),
     min_price: int = Query(None, description="Minimum price filter"),
     max_price: int = Query(None, description="Maximum price filter"),
-    category_id: Optional[int] = Query(
-        None,
-        description=(
-            "Kleinanzeigen category id, e.g. 161 for Elektronik / "
-            "Haushaltsgeräte. This is the value that appears as 'cNNN' "
-            "inside the k0c... filter segment of a Kleinanzeigen URL. "
-            "Can be used alone or together with category_slug."
-        ),
+    category_id: int | None = Query(
+        None, ge=1, description="Kleinanzeigen category ID"
     ),
-    category_slug: Optional[str] = Query(
-        None,
-        description=(
-            "Kleinanzeigen category slug, e.g. 's-multimedia-elektronik'. "
-            "Optional; combine with category_id for a canonical URL and "
-            "to avoid an extra server-side redirect. Ignored if "
-            "category_id is not set."
-        ),
-    ),
-    page_count: Optional[int] = Query(
+    category_slug: str | None = Query(None, description="Optional category path slug"),
+    page: int = Query(1, ge=1, description="First page to fetch"),
+    page_count: int | None = Query(
         None,
         ge=1,
         le=50,
-        description="Number of pages to fetch; omitted = automatic pagination",
+        description="Pages to fetch; omitted = automatic pagination (up to 50 pages)",
     ),
-    min_publish_date: Optional[datetime] = Query(
+    min_publish_date: datetime | None = Query(
         None,
         description="Stop fetching once listings published before this datetime (inclusive, format: YYYY-MM-DDTHH:MM:SS)",
     ),
-    include_terms: Optional[str] = Query(
-        None,
-        description="Kommagetrennte Begriffe/Regex — mind. einer muss in title/description vorkommen",
+    include_terms: str | None = Query(
+        None, description="Comma-separated terms; at least one must match"
     ),
-    exclude_terms: Optional[str] = Query(
-        None,
-        description="Kommagetrennte Begriffe/Regex — keiner darf in title/description vorkommen",
+    exclude_terms: str | None = Query(
+        None, description="Comma-separated terms that must not match"
     ),
-    use_regex: bool = Query(
-        False, description="include_terms/exclude_terms als Regex statt literaler Substrings interpretieren"
-    ),
-    match_all_include: bool = Query(
-        False, description="true = alle include_terms müssen matchen (AND), false = mind. einer (OR)"
-    ),
-    case_sensitive: bool = Query(False, description="Groß-/Kleinschreibung beachten"),
-    filter_fields: str = Query(
-        "title,description",
-        description="Felder für die Filterung: title, description (description_full ist an diesem Endpunkt nicht verfügbar)",
-    ),
+    use_regex: bool = Query(False),
+    match_all_include: bool = Query(False),
+    case_sensitive: bool = Query(False),
+    filter_fields: str = Query("title,description"),
 ):
     """
     Fetch listings based on search criteria.
 
     Retrieves listings from Kleinanzeigen with support for various filters
-    including location, price range, search terms, and category. Results
-    are returned with performance metrics and success indicators.
-
-    Category filtering example:
-
-        GET /inserate?query=liebherr&category_id=161&category_slug=s-multimedia-elektronik&location=38106
-
-    restricts results to that Kleinanzeigen category (e.g. Elektronik ->
-    Haushaltsgeräte), equivalent to manually navigating to
-    https://www.kleinanzeigen.de/s-multimedia-elektronik/38106/liebherr/k0c161...
-
-    Content filtering (include_terms/exclude_terms) is applied as
-    post-processing on already-fetched results, since Kleinanzeigen's own
-    search does not support server-side full-text include/exclude filtering.
+    including location, price range, and search terms. Results are returned
+    with performance metrics and success indicators.
     """
     browser_manager = request.app.state.browser_manager
     if not browser_manager:
         raise HTTPException(status_code=503, detail="Service unavailable")
 
-    if "description_full" in [f.strip() for f in filter_fields.split(",")]:
+    if "description_full" in [field.strip() for field in filter_fields.split(",")]:
         raise HTTPException(
             status_code=400,
-            detail=(
-                "description_full ist an /inserate nicht verfügbar (nur "
-                "Vorschautext aus der Trefferliste). Nutze /inserate-detailed "
-                "für die vollständige Beschreibung."
-            ),
+            detail="description_full is not available on /inserate; use /inserate-detailed.",
         )
-
     content_filter = content_filter_from_params(
         include_terms=include_terms,
         exclude_terms=exclude_terms,
@@ -123,6 +91,7 @@ async def get_inserate_ultra_optimized(
             max_price=max_price,
             category_id=category_id,
             category_slug=category_slug,
+            page=page,
             page_count=page_count,
             min_publish_date=min_publish_date,
         )
@@ -136,41 +105,25 @@ async def get_inserate_ultra_optimized(
         # Simplify performance metrics
         if "performance_metrics" in result:
             metrics = result["performance_metrics"]
-        
-            # Fehlerdetails der letzten fehlgeschlagenen Seite extrahieren,
-            # bevor page_details verworfen wird
-            failed_pages = [
-                pd for pd in metrics.get("page_details", [])
-                if not pd.get("success")
-            ]
-        
+            # Keep only essential metrics
             essential_metrics = {
                 "pages_requested": metrics.get("pages_requested", 0),
                 "pages_successful": metrics.get("pages_successful", 0),
                 "success_rate": metrics.get("success_rate", 0),
                 "average_page_time": metrics.get("average_page_time", 0),
-                "category_id": metrics.get("category_id"),
-                "category_slug": metrics.get("category_slug"),
-                "stop_reason": metrics.get("stop_reason"),
-                "failed_pages": failed_pages,  # enthält error_message, error_category, retry_count je Seite
             }
-
             result["performance_metrics"] = essential_metrics
 
-        # Content filtering (post-processing, da Kleinanzeigen selbst
-        # keine serverseitige Volltextfilterung unterstützt)
         if content_filter.active:
             original_results = result.get("results", [])
-            before_count = len(original_results)
             filtered_results = content_filter.apply(original_results)
-
             result["results"] = filtered_results
             result["unique_results"] = len(filtered_results)
             result["content_filter_meta"] = {
                 **content_filter.summary(),
-                "results_before_filter": before_count,
+                "results_before_filter": len(original_results),
                 "results_after_filter": len(filtered_results),
-                "filtered_out": before_count - len(filtered_results),
+                "filtered_out": len(original_results) - len(filtered_results),
             }
 
         return result

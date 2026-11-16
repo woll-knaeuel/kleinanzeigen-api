@@ -8,6 +8,19 @@
   </p>
 
   <p align="center">
+    <a href="https://github.com/DanielWTE/ebay-kleinanzeigen-api"><img src="https://img.shields.io/github/stars/DanielWTE/ebay-kleinanzeigen-api" alt="GitHub stars"></a>
+    <a href="https://github.com/DanielWTE/ebay-kleinanzeigen-api/issues"><img src="https://img.shields.io/github/issues/DanielWTE/ebay-kleinanzeigen-api" alt="Open issues"></a>
+    <a href="https://github.com/DanielWTE/ebay-kleinanzeigen-api/pulls"><img src="https://img.shields.io/github/issues-pr/DanielWTE/ebay-kleinanzeigen-api" alt="Open pull requests"></a>
+    <br />
+    <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
+    <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.14+-blue" alt="Python 3.14+"></a>
+    <br />
+    <a href="https://fastapi.tiangolo.com/"><img src="https://img.shields.io/badge/FastAPI-0.115+-009688" alt="FastAPI"></a>
+    <a href="https://playwright.dev/python/"><img src="https://img.shields.io/badge/Playwright-1.49+-2EAD33" alt="Playwright"></a>
+    <a href="https://github.com/astral-sh/uv"><img src="https://img.shields.io/badge/package%20manager-uv-261230" alt="uv"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
+  </p>
+  <p align="center">
     <b>🚀 Looking for a ready-to-use solution?</b>
     <br />
     Try it at <a href="https://kleinanzeigen-agent.de/features/developer-api"><strong>kleinanzeigen-agent.de »</strong></a>
@@ -32,8 +45,8 @@ Visit [kleinanzeigen-agent.de](https://kleinanzeigen-agent.de/features/developer
 
 ### Prerequisites
 
-- Python 3.12 or higher
-- pip (Python package manager)
+- Python 3.14 or higher
+- uv (Python package manager)
 - Playwright
 
 ### Installation
@@ -48,49 +61,19 @@ cd ebay-kleinanzeigen-api
 2. Install dependencies
 
 ```sh
-pip install -r requirements.txt
-playwright install chromium
+uv sync
+uv run playwright install chromium
 ```
 
 3. Start the API
 
 ```sh
-uvicorn main:app --reload
+uv run uvicorn main:app --reload
 ```
 
 The API will be available at `http://localhost:8000`
 
-#### Non-headless mode (visible browser)
-
-Set the `HEADLESS` environment variable to `false` to watch the browser while scraping — useful during development:
-
-```sh
-HEADLESS=false uvicorn main:app --reload
-```
-
-### Installation using UV
-
-#### Prerequisites
-
-- uv package manager
-
-#### Installation of dependencies
-
-```sh
-uv sync
-```
-
-#### Start the API
-
-```sh
-uv run uvicorn main:app --reload
-```
-
-#### Non-headless mode with UV
-
-```sh
-HEADLESS=false uv run uvicorn main:app --reload
-```
+> **Windows:** start without `--reload` (`uv run uvicorn main:app`). With `--reload` (or `--workers`), uvicorn runs a `SelectorEventLoop` on Windows, which cannot start the Playwright browser process and fails with `NotImplementedError`. Alternatively, use Docker.
 
 ### Installation using Docker
 
@@ -108,6 +91,13 @@ docker run -p 8000:8000 ebay-kleinanzeigen-api
 
 The API will be available at `http://localhost:8000`
 
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `BROWSER_CDP_URL` | - | Connect to an external browser over CDP (BrowserUse, browserless, `chromium --remote-debugging-port`) instead of launching a local Chromium. |
+| `BROWSER_DISABLE_RESOURCE_BLOCKING` | `0` | Set to `1` to disable request interception. By default the browser aborts image/media/font requests and ad-tech scripts (liberty, GDPR consent, promos, GTM, kameleoon), cutting roughly 35–50% of transferred bytes per page. Stylesheets are kept because text extraction depends on CSS visibility. Disable only for debugging extraction issues. |
+
 ### API Endpoints
 
 #### 1. Fetch Listings (Standard)
@@ -123,7 +113,8 @@ The API will be available at `http://localhost:8000`
 - **`radius`** *(integer, optional)*: The search radius in kilometers from the specified location (e.g., `5` for a 5 km radius).
 - **`min_price`** *(integer, optional)*: The minimum price in Euros for the listings (e.g., `200` for at least 200 Euros).
 - **`max_price`** *(integer, optional)*: The maximum price in Euros for the listings (e.g., `500` for at most 500 Euros).
-- **`page_count`** *(integer, optional)*: The number of pages to search or return (e.g., `5` for the first 5 pages, default is 1, max: 20 pages).
+- **`page`** *(integer, optional)*: The first page to fetch (default 1). `page=5&page_count=3` fetches pages 5–7. Pages beyond the real result count return empty.
+- **`page_count`** *(integer, optional)*: The number of consecutive pages to fetch starting at `page` (default 1, max: 20 pages). Fetching stops early when pages run out or `min_publish_date` is reached.
 - **`min_publish_date`** *(datetime, optional)*: Stop fetching once a page contains listings published before this datetime. Listings older than the threshold are removed from the final results. Format: `YYYY-MM-DDTHH:MM:SS` (e.g., `2026-05-03T08:00:00`). Useful for intraday runs that should only collect new listings.
 
 ##### Example Requests
@@ -383,7 +374,9 @@ curl -s -X POST http://localhost:8000/inserate-by-url \
       "title": "VW Golf Variant 2.0 TDI Automatik Klima",
       "price": "12500",
       "description": "Gepflegter Zustand, Erstbesitz...",
-      "published_at": "2026-05-03T22:06:00"
+      "published_at": "2026-05-03T22:06:00",
+      "is_top_ad": false,
+      "distance_km": 12.5
     }
   ],
   "unique_results": 75,
@@ -412,9 +405,14 @@ curl -s -X POST http://localhost:8000/inserate-by-url \
   - `title` — Listing title
   - `price` — Price as string (numeric digits only, no currency symbol; empty string if not set)
   - `description` — Short teaser text from the listing card
-  - `published_at` — ISO 8601 publish datetime (e.g. `"2026-05-03T22:06:00"`). Older listings show only the date at midnight (`"2026-04-26T00:00:00"`). `null` if not shown on the card.
-- **`unique_results`**: Total number of listings returned across all fetched pages.
+  - `published_at` — ISO 8601 publish datetime (e.g. `"2026-05-03T22:06:00"`). Older listings show only the date at midnight (`"2026-04-26T00:00:00"`). Top ads hide the date on their card; it is then taken from the page's embedded listing data. `null` only if neither source has a date.
+  - `is_top_ad` — `true` for paid "TOP" listings pinned above the date-sorted results. They are ignored when `min_publish_date` decides whether to stop paging.
+  - `location` — Cleaned location text (zip/city); a trailing `(N km)` distance is stripped into `distance_km`.
+  - `distance_km` — Distance in kilometres when the card shows one as `(N km)` or `(N,5 km)`; `null` otherwise.
+- **`unique_results`**: Total number of unique listings returned across all fetched pages (deduplicated by ad ID).
 - **`total_results`**: Total hits reported by Kleinanzeigen for this search (e.g. `120140`). Extracted from the page breadcrumb on the first page load — no extra request needed.
+- **`total_pages`**: Real page count derived from `total_results`; omitted when the first fetched page is not page 1 (page size is then ambiguous).
+- **`page`** / **`pages_fetched`**: The first page requested and how many pages were actually fetched — smaller than `page_count` when fetching stopped early.
 - **`time_taken`**: Total elapsed time in seconds.
 - **`performance_metrics.pages_requested`** / **`pages_successful`** / **`success_rate`**: Page-level fetch statistics.
 
@@ -464,6 +462,7 @@ curl -X POST http://localhost:8000/convert-url \
 {
   "inserate_params": {
     "query": "klima",
+    "page": 1,
     "page_count": 1
   },
   "unmapped": {
@@ -532,7 +531,8 @@ The `/inserate-detailed` response additionally nests a `details` object inside e
       "title": "Example Item",
       "price": "100",
       "description": "Short teaser text...",
-      "published_at": "2026-05-03T22:06:00"
+      "published_at": "2026-05-03T22:06:00",
+      "distance_km": null
     }
   ],
   "unique_results": 75,
@@ -556,6 +556,7 @@ The `/inserate-detailed` response additionally nests a `details` object inside e
 {
   "inserate_params": {
     "query": "klima",
+    "page": 1,
     "page_count": 1
   },
   "unmapped": {
@@ -588,7 +589,7 @@ Performance tests conducted on **Arch Linux** with **Intel i7-1260P** processor:
 ### Performance Highlights
 
 - **Single page search**: ~1.2s average response time
-- **10-page search**: ~5.0s average response time  
+- **10-page search**: ~5.0s average response time
 - **Individual listing details**: ~1.1s average response time
 - **Combined search + details**: ~9.1s average for 1 page with full details
 
@@ -639,13 +640,13 @@ but lives in a different location.
 
 ```python
 # Before
-image = response["data"]["images"]        # single URL string or list of one
+image = response["data"]["images"]  # single URL string or list of one
 views = response["data"]["views"]
 
 # After
-images = response["data"]["media"]["images"]["urls"]   # list of all gallery images
-count  = response["data"]["media"]["images"]["count"]
-views  = response["data"]["extra_info"]["views"]       # unchanged
+images = response["data"]["media"]["images"]["urls"]  # list of all gallery images
+count = response["data"]["media"]["images"]["count"]
+views = response["data"]["extra_info"]["views"]  # unchanged
 ```
 
 ```javascript

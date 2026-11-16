@@ -6,27 +6,65 @@ Reuses UltraOptimizedScraper for fetching/extraction; only the URL-building diff
 import asyncio
 import gc
 import logging
+import re
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Any
 
+from scrapers.inserate_ultra_optimized import (
+    _dedupe_by_adid,
+    _filter_by_min_publish_date,
+    _page_has_old_listings,
+    create_ultra_optimized_scraper,
+)
+from utils.breadcrumb import TOTAL_RESULTS_SELECTOR, parse_breadcrumb
 from utils.browser import OptimizedPlaywrightManager
 from utils.performance import PerformanceTracker
-from utils.pagination import inject_page, parse_breadcrumb
-from scrapers.inserate_ultra_optimized import (
-    create_ultra_optimized_scraper,
-    _page_has_old_listings,
-    _filter_by_min_publish_date,
-)
 
-_TOTAL_RESULTS_SELECTOR = {"breadcrump_summary": ".breadcrump-summary"}
+
+def inject_page(url: str, page_num: int) -> str:
+    """
+    Strip any existing seite/s-seite segment and inject the requested page number.
+
+    Category URLs: seite:N is inserted immediately before the filter segment
+    (the segment matching k?\\d*c\\d+), preserving any extra path components
+    (e.g. anzeige:angebote, preis::N) that appear before it:
+      /s-autos/anzeige:angebote/preis::15000/seite:2/c216+...
+    Generic search URLs (no filter segment): s-seite:N appended before the query string.
+    """
+    from urllib.parse import unquote, urlparse, urlunparse
+
+    parsed = urlparse(url)
+    path = unquote(parsed.path)
+
+    # Strip any existing page segment
+    segments = [
+        s
+        for s in path.strip("/").split("/")
+        if s and not re.match(r"^s-seite:\d+$", s) and not re.match(r"^seite:\d+$", s)
+    ]
+
+    if page_num > 1:
+        filter_idx = next(
+            (i for i, s in enumerate(segments) if re.match(r"^k?\d*c\d+", s)),
+            None,
+        )
+        if filter_idx is not None:
+            # Insert seite:N directly before the filter segment
+            segments.insert(filter_idx, f"seite:{page_num}")
+        else:
+            # Generic search: append s-seite:N before query string
+            segments.append(f"s-seite:{page_num}")
+
+    new_path = "/" + "/".join(segments)
+    return urlunparse(parsed._replace(path=new_path))
 
 
 async def scrape_by_url(
     browser_manager: OptimizedPlaywrightManager,
     base_url: str,
     max_pages: int = 1,
-    min_publish_date: datetime = None,
-) -> Dict[str, Any]:
+    min_publish_date: datetime | None = None,
+) -> dict[str, Any]:
     """Scrape up to max_pages pages starting from base_url.
 
     If min_publish_date is set, stops fetching once a page contains listings
@@ -40,8 +78,8 @@ async def scrape_by_url(
         batch_size = min(8, max_pages)
         all_results = []
         all_metrics = []
-        total_results: Optional[int] = None
-        actual_max_pages: Optional[int] = None
+        total_results: int | None = None
+        actual_max_pages: int | None = None
         _log = logging.getLogger("scrape_by_url")
 
         # Fetch pages sequentially — Kleinanzeigen blocks concurrent requests
@@ -62,7 +100,7 @@ async def scrape_by_url(
             result = await scraper.ultra_optimized_fetch_page(
                 inject_page(base_url, page_num),
                 page_num,
-                extra_selectors=_TOTAL_RESULTS_SELECTOR if page_num == 1 else None,
+                extra_selectors=TOTAL_RESULTS_SELECTOR if page_num == 1 else None,
             )
             if not isinstance(result, Exception):
                 page_results, page_metrics, extras = result
@@ -120,6 +158,8 @@ async def scrape_by_url(
             (successful_pages / pages_attempted) * 100 if pages_attempted > 0 else 0
         )
 
+        all_results = _dedupe_by_adid(all_results)
+
         response = {
             "success": True,
             "results": all_results,
@@ -134,10 +174,13 @@ async def scrape_by_url(
                 ),
             },
             "browser_metrics": browser_metrics,
+            "page": 1,
+            "pages_fetched": pages_attempted,
         }
 
         if total_results is not None:
             response["total_results"] = total_results
+            response["total_pages"] = actual_max_pages
 
         return response
     finally:

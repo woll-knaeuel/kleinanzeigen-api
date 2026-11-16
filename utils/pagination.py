@@ -8,8 +8,7 @@ construction and breadcrumb parsing can't drift apart between the two code paths
 
 import math
 import re
-from typing import Optional, Tuple
-from urllib.parse import urlparse, urlunparse, unquote
+from urllib.parse import unquote, urlparse, urlunparse
 
 RESULTS_PER_PAGE = 25
 
@@ -81,7 +80,7 @@ def inject_page(url: str, page_num: int) -> str:
     return urlunparse(parsed._replace(path=new_path))
 
 
-def parse_breadcrumb(breadcrumb_text: str) -> Tuple[Optional[int], Optional[int]]:
+def parse_breadcrumb(breadcrumb_text: str) -> tuple[int | None, int | None]:
     """Parse a breadcrumb summary into (total_results, actual_page_count).
 
     Kleinanzeigen renders e.g. 'Autos 1 - 25 von 48 Gebrauchtwagen...' or
@@ -105,7 +104,7 @@ def parse_breadcrumb(breadcrumb_text: str) -> Tuple[Optional[int], Optional[int]
     return total, math.ceil(total / page_size)
 
 
-async def get_total_result_count(page) -> Optional[int]:
+async def get_total_result_count(page) -> int | None:
     """Read the total-result count from whichever breadcrumb selector matches.
 
     Kleinanzeigen has used both '.breadcrump-summary' (class) and
@@ -123,6 +122,6 @@ async def get_total_result_count(page) -> Optional[int]:
             total, _ = parse_breadcrumb(text)
             if total is not None:
                 return total
-        except Exception:
+        except Exception:  # noqa: S112 -- retrying the next known selector is intentional.
             continue
     return None

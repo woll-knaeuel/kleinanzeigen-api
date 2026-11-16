@@ -1,22 +1,30 @@
 import asyncio
 import uuid
-from typing import List
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from schemas import BatchResponse, ErrorResponse
 from scrapers.inserat import get_inserate_details_optimized
 
 router = APIRouter()
 
 
-class InsérateBatchRequest(BaseModel):
-    ids: List[str]
+class InserateBatchRequest(BaseModel):
+    ids: list[str]
     max_concurrent: int = 1
 
 
-@router.post("/inserate/batch")
-async def get_inserate_batch(request: Request, body: InsérateBatchRequest):
+@router.post(
+    "/inserate/batch",
+    response_model=BatchResponse,
+    response_model_exclude_unset=True,
+    responses={
+        400: {"model": ErrorResponse, "description": "No valid listing IDs provided"},
+        503: {"model": ErrorResponse, "description": "Browser manager not initialized"},
+    },
+)
+async def get_inserate_batch(request: Request, body: InserateBatchRequest):
     """
     Fetch detailed information for a list of listing IDs in a single request.
 
@@ -50,8 +58,8 @@ async def get_inserate_batch(request: Request, body: InsérateBatchRequest):
     tasks = [fetch_one(lid, i + 1) for i, lid in enumerate(ids)]
     raw = await asyncio.gather(*tasks, return_exceptions=True)
 
-    results: List[dict] = []
-    errors: List[str] = []
+    results: list[dict] = []
+    errors: list[str] = []
     for lid, outcome in zip(ids, raw):
         if isinstance(outcome, Exception):
             errors.append(f"{lid}: {outcome}")

@@ -15,8 +15,12 @@ sleeping — guaranteeing sequential execution with cooldowns.
 
 import time
 from datetime import datetime
-import pytest
+
 import httpx
+import pytest
+
+pytestmark = pytest.mark.integration
+
 
 BASE_URL = "http://localhost:8000"
 

@@ -8,7 +8,8 @@ der vollständigen Beschreibung.
 """
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 from fastapi import HTTPException
 
 VALID_FIELDS = {"title", "description", "description_full"}
@@ -17,8 +18,8 @@ VALID_FIELDS = {"title", "description", "description_full"}
 class ContentFilter:
     def __init__(
         self,
-        include_terms: Optional[str] = None,
-        exclude_terms: Optional[str] = None,
+        include_terms: str | None = None,
+        exclude_terms: str | None = None,
         use_regex: bool = False,
         match_all_include: bool = False,
         case_sensitive: bool = False,
@@ -34,7 +35,7 @@ class ContentFilter:
             raise HTTPException(
                 status_code=400,
                 detail=f"Unbekannte filter_fields: {sorted(unknown)}. "
-                       f"Erlaubt: {sorted(VALID_FIELDS)}",
+                f"Erlaubt: {sorted(VALID_FIELDS)}",
             )
         self.fields = fields or ["title", "description"]
 
@@ -45,7 +46,7 @@ class ContentFilter:
         except re.error as e:
             raise HTTPException(status_code=400, detail=f"Ungültiges Regex-Muster: {e}")
 
-    def _compile(self, terms: Optional[str], flags: int) -> List[re.Pattern]:
+    def _compile(self, terms: str | None, flags: int) -> list[re.Pattern]:
         if not terms:
             return []
         parts = [t.strip() for t in terms.split(",") if t.strip()]
@@ -61,7 +62,7 @@ class ContentFilter:
     def needs_full_description(self) -> bool:
         return "description_full" in self.fields
 
-    def _text_for(self, listing: Dict[str, Any]) -> str:
+    def _text_for(self, listing: dict[str, Any]) -> str:
         parts = []
         if "title" in self.fields:
             parts.append(listing.get("title") or "")
@@ -72,7 +73,7 @@ class ContentFilter:
             parts.append(details.get("description") or "")
         return "\n".join(parts)
 
-    def matches(self, listing: Dict[str, Any]) -> bool:
+    def matches(self, listing: dict[str, Any]) -> bool:
         text = self._text_for(listing)
 
         if self.exclude_patterns and any(p.search(text) for p in self.exclude_patterns):
@@ -84,12 +85,12 @@ class ContentFilter:
 
         return True
 
-    def apply(self, listings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def apply(self, listings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not self.active:
             return listings
         return [item for item in listings if self.matches(item)]
 
-    def summary(self) -> Dict[str, Any]:
+    def summary(self) -> dict[str, Any]:
         return {
             "include_terms": [p.pattern for p in self.include_patterns],
             "exclude_terms": [p.pattern for p in self.exclude_patterns],
@@ -101,8 +102,8 @@ class ContentFilter:
 
 
 def content_filter_from_params(
-    include_terms: Optional[str] = None,
-    exclude_terms: Optional[str] = None,
+    include_terms: str | None = None,
+    exclude_terms: str | None = None,
     use_regex: bool = False,
     match_all_include: bool = False,
     case_sensitive: bool = False,
